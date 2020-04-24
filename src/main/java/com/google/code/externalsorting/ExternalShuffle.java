@@ -185,8 +185,7 @@ public class ExternalShuffle {
          * This merges several BinaryFileBuffer to an output writer.
          *
          * @param fbw     A buffer where we write the data.
-         * @param random     A comparator object that tells us how to shuffle the
-         *                lines.
+         * @param random  A random number generator.
          * @param distinct Pass <code>true</code> if duplicate lines should be
          *                discarded.
          * @param buffers
@@ -489,7 +488,7 @@ public class ExternalShuffle {
          *
          * @return the file containing the shuffled data
          * @param tmplist data to be shuffled
-         * @param random string comparator
+         * @param random random number generator
          * @param cs charset to use for output (can use
          *                Charset.defaultCharset())
          * @param tmpdirectory location of the temporary files (set to null for
@@ -507,7 +506,7 @@ public class ExternalShuffle {
          *
          * @return the file containing the shuffled data
          * @param tmplist data to be shuffled
-         * @param random string comparator
+         * @param random random number generator
          * @param cs charset to use for output (can use
          *                Charset.defaultCharset())
          * @param tmpdirectory location of the temporary files (set to null for
@@ -586,7 +585,7 @@ public class ExternalShuffle {
          *
          * @param fbr data source
          * @param datalength estimated data volume (in bytes)
-         * @param random string comparator
+         * @param random random number generator
          * @param distinct Pass <code>true</code> if duplicate lines should be
          *                discarded.
          * @return a list of temporary flat files
@@ -607,7 +606,7 @@ public class ExternalShuffle {
          *
          * @param fbr data source
          * @param datalength estimated data volume (in bytes)
-         * @param random string comparator
+         * @param random random number generator
          * @param maxtmpfiles maximal number of temporary files
          * @param maxMemory maximum amount of memory to use (in bytes)
          * @param cs character set to use (can use
@@ -687,7 +686,7 @@ public class ExternalShuffle {
          * merged later.
          *
          * @param file some flat file
-         * @param random string comparator
+         * @param random random number generator
          * @return a list of temporary flat files
          * @throws IOException generic IO exception
          */
@@ -702,7 +701,7 @@ public class ExternalShuffle {
          * merged later.
          *
          * @param file some flat file
-         * @param random string comparator
+         * @param random random number generator
          * @param distinct Pass <code>true</code> if duplicate lines should be
          *                discarded.
          * @return a list of temporary flat files
@@ -721,7 +720,7 @@ public class ExternalShuffle {
          * files that will be created.
          *
          * @param file some flat file
-         * @param random string comparator
+         * @param random random number generator
          * @param tmpdirectory location of the temporary files (set to null for
          *                default location)
          * @param distinct Pass <code>true</code> if duplicate lines should be
@@ -746,7 +745,7 @@ public class ExternalShuffle {
          * files that will be created.
          *
          * @param file some flat file
-         * @param random string comparator
+         * @param random random number generator
          * @param maxtmpfiles maximal number of temporary files
          * @param cs  character set to use (can use
          *                Charset.defaultCharset())
@@ -771,7 +770,7 @@ public class ExternalShuffle {
          * files that will be created.
          *
          * @param file some flat file
-         * @param random string comparator
+         * @param random random number generator
          * @param cs character set to use (can use
          *                Charset.defaultCharset())
          * @param tmpdirectory location of the temporary files (set to null for
@@ -800,7 +799,7 @@ public class ExternalShuffle {
          * files that will be created.
          *
          * @param file some flat file
-         * @param random string comparator
+         * @param random random number generator
          * @param maxtmpfiles maximal number of temporary files
          * @param cs character set to use (can use
          *                Charset.defaultCharset())
@@ -830,7 +829,7 @@ public class ExternalShuffle {
          * files that will be created.
          *
          * @param file some flat file
-         * @param random string comparator
+         * @param random random number generator
          * @param maxtmpfiles maximal number of temporary files
          * @param cs character set to use (can use
          *                Charset.defaultCharset())
@@ -861,7 +860,7 @@ public class ExternalShuffle {
          * files that will be created.
          *
          * @param file some flat file
-         * @param random string comparator
+         * @param random random number generator
          * @param maxtmpfiles maximal number of temporary files
          * @param cs character set to use (can use
          *                Charset.defaultCharset())
