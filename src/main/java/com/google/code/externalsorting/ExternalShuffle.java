@@ -208,6 +208,7 @@ public class ExternalShuffle {
                         ++rowcounter;
                         if (bfb.empty()) {
                                 bfb.close();
+                                buffers.remove(bfb);
                         }
                         sum -= 1;
                 }
