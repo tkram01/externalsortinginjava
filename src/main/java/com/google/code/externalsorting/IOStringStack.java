@@ -15,4 +15,6 @@ public interface IOStringStack {
 
     public String pop() throws IOException;
 
+    public int size();
+
 }

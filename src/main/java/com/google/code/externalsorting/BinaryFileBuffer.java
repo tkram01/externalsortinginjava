@@ -9,10 +9,16 @@ import java.io.IOException;
  *
  */
 public final class BinaryFileBuffer implements IOStringStack {
-    public BinaryFileBuffer(BufferedReader r) throws IOException {
+    public BinaryFileBuffer(BufferedReader r, int size) throws IOException {
         this.fbr = r;
+        this.size = size;
         reload();
     }
+
+    public BinaryFileBuffer(BufferedReader r) throws IOException {
+        this(r, 0);
+    }
+
     public void close() throws IOException {
         this.fbr.close();
     }
@@ -28,15 +34,23 @@ public final class BinaryFileBuffer implements IOStringStack {
     public String pop() throws IOException {
         String answer = peek().toString();// make a copy
         reload();
+        size -= 1;
         return answer;
+    }
+
+    @Override
+    public int size() {
+        return size;
     }
 
     private void reload() throws IOException {
         this.cache = this.fbr.readLine();
     }
 
-    private BufferedReader fbr;
+    private final BufferedReader fbr;
 
     private String cache;
+
+    private int size;
 
 }

@@ -5,7 +5,7 @@ package com.google.code.externalsorting;
 import java.io.*;
 import java.nio.charset.Charset;
 import java.util.*;
-import java.util.stream.Collectors;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.zip.Deflater;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
@@ -41,7 +41,6 @@ public class ExternalShuffle {
                         .println("java com.google.externalsorting.ExternalShuffle inputfile outputfile");
                 System.out.println("Flags are:");
                 System.out.println("-v or --verbose: verbose output");
-                System.out.println("-d or --distinct: prune duplicate lines");
                 System.out
                         .println("-t or --maxtmpfiles (followed by an integer): specify an upper bound on the number of temporary files");
                 System.out
@@ -105,13 +104,11 @@ public class ExternalShuffle {
          */
         public static void main(final String[] args) throws IOException {
                 boolean verbose = false;
-                boolean distinct = false;
                 int maxtmpfiles = DEFAULTMAXTEMPFILES;
                 Charset cs = Charset.defaultCharset();
                 String inputfile = null, outputfile = null;
                 File tempFileStore = null;
                 boolean usegzip = false;
-                boolean parallel = true;
                 int headersize = 0;
                 for (int param = 0; param < args.length; ++param) {
                         if (args[param].equals("-v")
@@ -121,9 +118,6 @@ public class ExternalShuffle {
                                 .equals("--help"))) {
                                 displayUsage();
                                 return;
-                        } else if ((args[param].equals("-d") || args[param]
-                                .equals("--distinct"))) {
-                                distinct = true;
                         } else if ((args[param].equals("-t") || args[param]
                                 .equals("--maxtmpfiles"))
                                 && args.length > param + 1) {
@@ -170,15 +164,15 @@ public class ExternalShuffle {
                         displayUsage();
                         return;
                 }
-                List<File> l = shuffInBatch(new File(inputfile), defaultRandom,
-                        maxtmpfiles, cs, tempFileStore, distinct, headersize,
-                        usegzip, parallel);
+                ThreadLocalRandom random = ThreadLocalRandom.current();
+                List<LineCountFile> l = shuffInBatch(new File(inputfile), random,
+                        maxtmpfiles, cs, tempFileStore, headersize,
+                        usegzip);
                 if (verbose) {
                         System.out
                                 .println("created " + l.size() + " tmp files");
                 }
-                mergeShuffledFiles(l, new File(outputfile), defaultRandom, cs,
-                        distinct, false, usegzip);
+                mergeShuffledFiles(l, new File(outputfile), random, cs, false, usegzip);
         }
 
         /**
@@ -186,8 +180,6 @@ public class ExternalShuffle {
          *
          * @param fbw     A buffer where we write the data.
          * @param random  A random number generator.
-         * @param distinct Pass <code>true</code> if duplicate lines should be
-         *                discarded.
          * @param buffers
          *                Where the data should be read.
          * @return The number of lines shuffled.
@@ -195,75 +187,32 @@ public class ExternalShuffle {
          *
          */
         public static long mergeShuffledFiles(BufferedWriter fbw,
-                final Random random, boolean distinct,
-                List<IOStringStack> buffers) throws IOException {
-                PriorityQueue<IOStringStack> pq = new PriorityQueue<>(
-                        11, new Comparator<IOStringStack>() {
-                                @Override
-                                public int compare(IOStringStack i,
-                                IOStringStack j) {
-                                        return cmp.compare(i.peek(), j.peek());
-                                }
-                        });
-                for (IOStringStack bfb : buffers) {
-                        if (!bfb.empty()) {
-                                pq.add(bfb);
-                        }
-                }
+                final Random random, List<IOStringStack> buffers) throws IOException {
+
+                int sum = 0;
+                for(IOStringStack ss : buffers) sum += ss.size();
                 long rowcounter = 0;
-                try {
-                        if (!distinct) {
-                            while (pq.size() > 0) {
-                                    IOStringStack bfb = pq.poll();
-                                    String r = bfb.pop();
-                                    fbw.write(r);
-                                    fbw.newLine();
-                                    ++rowcounter;
-                                    if (bfb.empty()) {
-                                            bfb.close();
-                                    } else {
-                                            pq.add(bfb); // add it back
-                                    }
-                            }
-                        } else {
-                            String lastLine = null;
-                            if(pq.size() > 0) {
-                           IOStringStack bfb = pq.poll();
-                           lastLine = bfb.pop();
-                           fbw.write(lastLine);
-                           fbw.newLine();
-                           ++rowcounter;
-                           if (bfb.empty()) {
-                             bfb.close();
-                           } else {
-                             pq.add(bfb); // add it back
-                           }
-                         }
-                            while (pq.size() > 0) {
-                        IOStringStack bfb = pq.poll();
-                          String r = bfb.pop();
-                          // Skip duplicate lines
-                          if  (cmp.compare(r, lastLine) != 0) {
-                            fbw.write(r);
-                            fbw.newLine();
-                            lastLine = r;
-                          }
-                          ++rowcounter;
-                          if (bfb.empty()) {
-                            bfb.close();
-                          } else {
-                            pq.add(bfb); // add it back
-                          }
-                            }
+                while(sum > 0) {
+                        int y = random.nextInt(sum); // random integer in [0,sum)
+                        // select the key in linear time
+                        int runningsum = 0;
+                        int z = 0;
+                        for(; z < buffers.size(); z++) {
+                                runningsum += buffers.get(z).size();
+                                if(y < runningsum) { break; }
                         }
-                } finally {
-                        fbw.close();
-                        for (IOStringStack bfb : pq) {
+                        IOStringStack bfb = buffers.get(z);
+                        String r = bfb.pop();
+                        fbw.write(r);
+                        fbw.newLine();
+                        ++rowcounter;
+                        if (bfb.empty()) {
                                 bfb.close();
                         }
+                        sum -= 1;
                 }
+                fbw.close();
                 return rowcounter;
-
         }
 
 
@@ -275,9 +224,9 @@ public class ExternalShuffle {
          * @return The number of lines shuffled.
          * @throws IOException generic IO exception
          */
-        public static long mergeShuffledFiles(List<File> files, File outputfile)
+        public static long mergeShuffledFiles(List<LineCountFile> files, File outputfile)
                 throws IOException {
-                return mergeShuffledFiles(files, outputfile, defaultRandom,
+                return mergeShuffledFiles(files, outputfile, ThreadLocalRandom.current(),
                         Charset.defaultCharset());
         }
 
@@ -291,7 +240,7 @@ public class ExternalShuffle {
          * @return The number of lines shuffled.
          * @throws IOException generic IO exception
          */
-        public static long mergeShuffledFiles(List<File> files, File outputfile,
+        public static long mergeShuffledFiles(List<LineCountFile> files, File outputfile,
                 final Random random) throws IOException {
                 return mergeShuffledFiles(files, outputfile, random,
                         Charset.defaultCharset());
@@ -304,54 +253,16 @@ public class ExternalShuffle {
          * @param outputfile The output {@link File} to merge the results to.
          * @param random The {@link Comparator} to use to compare
          *                {@link String}s.
-         * @param distinct Pass <code>true</code> if duplicate lines should be
-         *                discarded.
-         * @return The number of lines shuffled.
-         * @throws IOException generic IO exception
-         */
-        public static long mergeShuffledFiles(List<File> files, File outputfile,
-                final Random random, boolean distinct)
-                throws IOException {
-                return mergeShuffledFiles(files, outputfile, random,
-                        Charset.defaultCharset(), distinct);
-        }
-
-        /**
-         * This merges a bunch of temporary flat files
-         *
-         * @param files The {@link List} of shuffled {@link File}s to be merged.
-         * @param outputfile The output {@link File} to merge the results to.
-         * @param random The {@link Comparator} to use to compare
-         *                {@link String}s.
-         * @param cs The {@link Charset} to be used for the byte to
-         *                character conversion.
-         * @return The number of lines shuffled.
-         * @throws IOException generic IO exception
-         */
-        public static long mergeShuffledFiles(List<File> files, File outputfile,
-                final Random random, Charset cs) throws IOException {
-                return mergeShuffledFiles(files, outputfile, random, cs, false);
-        }
-
-        /**
-         * This merges a bunch of temporary flat files
-         *
-         * @param files The {@link List} of shuffled {@link File}s to be merged.
-         * @param distinct Pass <code>true</code> if duplicate lines should be
-         *                discarded.
-         * @param outputfile The output {@link File} to merge the results to.
-         * @param random The {@link Comparator} to use to compare
-         *                {@link String}s.
          * @param cs The {@link Charset} to be used for the byte to
          *                character conversion.
          * @return The number of lines shuffled.
          * @throws IOException generic IO exception
          * @since v0.1.2
          */
-        public static long mergeShuffledFiles(List<File> files, File outputfile,
-                final Random random, Charset cs, boolean distinct)
+        public static long mergeShuffledFiles(List<LineCountFile> files, File outputfile,
+                final Random random, Charset cs)
                 throws IOException {
-                return mergeShuffledFiles(files, outputfile, random, cs, distinct,
+                return mergeShuffledFiles(files, outputfile, random, cs,
                         false, false);
         }
 
@@ -359,8 +270,6 @@ public class ExternalShuffle {
          * This merges a bunch of temporary flat files
          *
          * @param files The {@link List} of shuffled {@link File}s to be merged.
-         * @param distinct Pass <code>true</code> if duplicate lines should be
-         *                discarded.
          * @param outputfile The output {@link File} to merge the results to.
          * @param random The {@link Comparator} to use to compare
          *                {@link String}s.
@@ -374,13 +283,13 @@ public class ExternalShuffle {
          * @throws IOException generic IO exception
          * @since v0.1.4
          */
-        public static long mergeShuffledFiles(List<File> files, File outputfile,
-                final Random random, Charset cs, boolean distinct,
+        public static long mergeShuffledFiles(List<LineCountFile> files, File outputfile,
+                final Random random, Charset cs,
                 boolean append, boolean usegzip) throws IOException {
                 ArrayList<IOStringStack> bfbs = new ArrayList<>();
-                for (File f : files) {
+                for (LineCountFile f : files) {
                         final int BUFFERSIZE = 2048;
-                        InputStream in = new FileInputStream(f);
+                        InputStream in = new FileInputStream(f.getFile());
                         BufferedReader br;
                         if (usegzip) {
                                 br = new BufferedReader(
@@ -392,61 +301,14 @@ public class ExternalShuffle {
                                         in, cs));
                         }
 
-                        BinaryFileBuffer bfb = new BinaryFileBuffer(br);
+                        BinaryFileBuffer bfb = new BinaryFileBuffer(br, f.getLineCount());
                         bfbs.add(bfb);
                 }
                 BufferedWriter fbw = new BufferedWriter(new OutputStreamWriter(
                         new FileOutputStream(outputfile, append), cs));
-                long rowcounter = mergeShuffledFiles(fbw, random, distinct, bfbs);
-                for (File f : files) {
-                        f.delete();
-                }
-                return rowcounter;
-        }
-
-        /**
-         * This merges a bunch of temporary flat files
-         *
-         * @param files The {@link List} of shuffled {@link File}s to be merged.
-         * @param distinct Pass <code>true</code> if duplicate lines should be
-         *                discarded.
-         * @param fbw The output {@link BufferedWriter} to merge the results to.
-         * @param random The {@link Comparator} to use to compare
-         *                {@link String}s.
-         * @param cs The {@link Charset} to be used for the byte to
-         *                character conversion.
-         * @param usegzip assumes we used gzip compression for temporary files
-         * @return The number of lines shuffled.
-         * @throws IOException generic IO exception
-         * @since v0.1.4
-         */
-        public static long mergeShuffledFiles(List<File> files, BufferedWriter fbw,
-                final Random random, Charset cs, boolean distinct,
-                boolean usegzip) throws IOException {
-                ArrayList<IOStringStack> bfbs = new ArrayList<>();
-                for (File f : files) {
-                        final int BUFFERSIZE = 2048;
-                        if (f.length() == 0) {
-                                continue;
-                        }
-                        InputStream in = new FileInputStream(f);
-                        BufferedReader br;
-                        if (usegzip) {
-                                br = new BufferedReader(
-                                        new InputStreamReader(
-                                                new GZIPInputStream(in,
-                                                        BUFFERSIZE), cs));
-                        } else {
-                                br = new BufferedReader(new InputStreamReader(
-                                        in, cs));
-                        }
-
-                        BinaryFileBuffer bfb = new BinaryFileBuffer(br);
-                        bfbs.add(bfb);
-                }
-                long rowcounter = mergeShuffledFiles(fbw, random, distinct, bfbs);
-                for (File f : files) {
-                        f.delete();
+                long rowcounter = mergeShuffledFiles(fbw, random, bfbs);
+                for (LineCountFile f : files) {
+                        f.getFile().delete();
                 }
                 return rowcounter;
         }
@@ -493,33 +355,12 @@ public class ExternalShuffle {
          *                Charset.defaultCharset())
          * @param tmpdirectory location of the temporary files (set to null for
          *                default location)
-         * @throws IOException generic IO exception
-         */
-        public static File shuffleAndSave(List<String> tmplist,
-                Random random, Charset cs, File tmpdirectory)
-                throws IOException {
-                return shuffleAndSave(tmplist, random, cs, tmpdirectory, false, false);
-        }
-
-        /**
-         * shuffle a list and save it to a temporary file
-         *
-         * @return the file containing the shuffled data
-         * @param tmplist data to be shuffled
-         * @param random random number generator
-         * @param cs charset to use for output (can use
-         *                Charset.defaultCharset())
-         * @param tmpdirectory location of the temporary files (set to null for
-         *                default location)
-         * @param distinct Pass <code>true</code> if duplicate lines should be
-         *                discarded.
          * @param usegzip set to <code>true</code> if you are using gzip compression for the
          *                temporary files
          * @throws IOException generic IO exception
          */
-        public static File shuffleAndSave(List<String> tmplist,
-                Random random, Charset cs, File tmpdirectory,
-                boolean distinct, boolean usegzip) throws IOException {
+        public static LineCountFile shuffleAndSave(List<String> tmplist,
+                Random random, Charset cs, File tmpdirectory, boolean usegzip) throws IOException {
                 Collections.shuffle(tmplist, random);
                 File newtmpfile = File.createTempFile("shuffInBatch", "flatfile", tmpdirectory);
                 newtmpfile.deleteOnExit();
@@ -534,48 +375,12 @@ public class ExternalShuffle {
                 }
                 try (BufferedWriter fbw = new BufferedWriter(new OutputStreamWriter(
                         out, cs))) {
-                        if (!distinct) {
-                            for (String r : tmplist) {
-                                        fbw.write(r);
-                                        fbw.newLine();
-                            }
-                        } else {
-                        String lastLine = null;
-                        Iterator<String> i = tmplist.iterator();
-                        if(i.hasNext()) {
-                          lastLine = i.next();
-                          fbw.write(lastLine);
-                          fbw.newLine();
-                        }
-                        while (i.hasNext()) {
-                          String r = i.next();
-                          // Skip duplicate lines
-                          if (cmp.compare(r, lastLine) != 0) {
-                            fbw.write(r);
-                            fbw.newLine();
-                            lastLine = r;
-                          }
-                        }
+                        for (String r : tmplist) {
+                                fbw.write(r);
+                                fbw.newLine();
                         }
                 }
-                return newtmpfile;
-        }
-
-        /**
-         * This will simply load the file by blocks of lines, then shuffle them
-         * in-memory, and write the result to temporary files that have to be
-         * merged later.
-         *
-         * @param fbr data source
-         * @param datalength estimated data volume (in bytes)
-         * @return a list of temporary flat files
-         * @throws IOException generic IO exception
-         */
-        public static List<File> shuffInBatch(final BufferedReader fbr,
-                final long datalength) throws IOException {
-                return shuffInBatch(fbr, datalength, defaultRandom,
-                        DEFAULTMAXTEMPFILES, estimateAvailableMemory(),
-                        Charset.defaultCharset(), null, false, 0, false);
+                return new LineCountFile(newtmpfile, tmplist.size());
         }
 
         /**
@@ -586,17 +391,14 @@ public class ExternalShuffle {
          * @param fbr data source
          * @param datalength estimated data volume (in bytes)
          * @param random random number generator
-         * @param distinct Pass <code>true</code> if duplicate lines should be
-         *                discarded.
          * @return a list of temporary flat files
          * @throws IOException generic IO exception
          */
-        public static List<File> shuffInBatch(final BufferedReader fbr,
-                final long datalength, final Random random,
-                final boolean distinct) throws IOException {
+        public static List<LineCountFile> shuffInBatch(final BufferedReader fbr,
+                final long datalength, final Random random) throws IOException {
                 return shuffInBatch(fbr, datalength, random, DEFAULTMAXTEMPFILES,
                         estimateAvailableMemory(), Charset.defaultCharset(),
-                        null, distinct, 0, false);
+                        null, 0, false);
         }
 
         /**
@@ -613,20 +415,18 @@ public class ExternalShuffle {
          *                Charset.defaultCharset())
          * @param tmpdirectory location of the temporary files (set to null for
          *                default location)
-         * @param distinct Pass <code>true</code> if duplicate lines should be
-         *                discarded.
          * @param numHeader number of lines to preclude before shuffling starts
          * @param usegzip use gzip compression for the temporary files
          * @return a list of temporary flat files
          * @throws IOException generic IO exception
          */
-        public static List<File> shuffInBatch(final BufferedReader fbr,
+        public static List<LineCountFile> shuffInBatch(final BufferedReader fbr,
                 final long datalength, final Random random,
                 final int maxtmpfiles, long maxMemory, final Charset cs,
-                final File tmpdirectory, final boolean distinct,
+                final File tmpdirectory,
                 final int numHeader, final boolean usegzip)
                     throws IOException {
-                List<File> files = new ArrayList<>();
+                List<LineCountFile> files = new ArrayList<>();
                 long blocksize = estimateBestSizeOfBlocks(datalength,
                         maxtmpfiles, maxMemory);// in
                 // bytes
@@ -651,13 +451,13 @@ public class ExternalShuffle {
                                                         .estimatedSizeOf(line);
                                         }
                                         files.add(shuffleAndSave(tmplist, random, cs,
-                                                tmpdirectory, distinct, usegzip));
+                                                tmpdirectory, usegzip));
                                         tmplist.clear();
                                 }
                         } catch (EOFException oef) {
                                 if (tmplist.size() > 0) {
                                         files.add(shuffleAndSave(tmplist, random, cs,
-                                                tmpdirectory, distinct, usegzip));
+                                                tmpdirectory, usegzip));
                                         tmplist.clear();
                                 }
                         }
@@ -676,8 +476,8 @@ public class ExternalShuffle {
          * @return a list of temporary flat files
          * @throws IOException generic IO exception
          */
-        public static List<File> shuffInBatch(File file) throws IOException {
-                return shuffInBatch(file, defaultRandom);
+        public static List<LineCountFile> shuffInBatch(File file) throws IOException {
+                return shuffInBatch(file, ThreadLocalRandom.current());
         }
 
         /**
@@ -690,27 +490,9 @@ public class ExternalShuffle {
          * @return a list of temporary flat files
          * @throws IOException generic IO exception
          */
-        public static List<File> shuffInBatch(File file, Random random)
-                throws IOException {
-                return shuffInBatch(file, random, false);
-        }
-
-        /**
-         * This will simply load the file by blocks of lines, then shuffle them
-         * in-memory, and write the result to temporary files that have to be
-         * merged later.
-         *
-         * @param file some flat file
-         * @param random random number generator
-         * @param distinct Pass <code>true</code> if duplicate lines should be
-         *                discarded.
-         * @return a list of temporary flat files
-         * @throws IOException generic IO exception
-         */
-        public static List<File> shuffInBatch(File file, Random random,
-                boolean distinct) throws IOException {
+        public static List<LineCountFile> shuffInBatch(File file, Random random) throws IOException {
                 return shuffInBatch(file, random, DEFAULTMAXTEMPFILES,
-                        Charset.defaultCharset(), null, distinct);
+                        Charset.defaultCharset(), null);
         }
 
         /**
@@ -723,18 +505,15 @@ public class ExternalShuffle {
          * @param random random number generator
          * @param tmpdirectory location of the temporary files (set to null for
          *                default location)
-         * @param distinct Pass <code>true</code> if duplicate lines should be
-         *                discarded.
          * @param numHeader number of lines to preclude before shuffling starts
          * @return a list of temporary flat files
          * @throws IOException generic IO exception
          */
-        public static List<File> shuffInBatch(File file, Random random,
-                File tmpdirectory,
-                boolean distinct, int numHeader)
+        public static List<LineCountFile> shuffInBatch(File file, Random random,
+                File tmpdirectory, int numHeader)
                 throws IOException {
                 return shuffInBatch(file, random, DEFAULTMAXTEMPFILES,
-                        Charset.defaultCharset(), tmpdirectory, distinct,
+                        Charset.defaultCharset(), tmpdirectory,
                         numHeader);
         }
 
@@ -751,16 +530,13 @@ public class ExternalShuffle {
          *                Charset.defaultCharset())
          * @param tmpdirectory location of the temporary files (set to null for
          *                default location)
-         * @param distinct Pass <code>true</code> if duplicate lines should be
-         *                discarded.
          * @return a list of temporary flat files
          * @throws IOException generic IO exception
          */
-        public static List<File> shuffInBatch(File file, Random random,
-                int maxtmpfiles, Charset cs, File tmpdirectory, boolean distinct)
+        public static List<LineCountFile> shuffInBatch(File file, Random random,
+                int maxtmpfiles, Charset cs, File tmpdirectory)
                 throws IOException {
-                return shuffInBatch(file, random, maxtmpfiles, cs, tmpdirectory,
-                        distinct, 0);
+                return shuffInBatch(file, random, maxtmpfiles, cs, tmpdirectory, 0);
         }
 
                  /**
@@ -775,20 +551,17 @@ public class ExternalShuffle {
          *                Charset.defaultCharset())
          * @param tmpdirectory location of the temporary files (set to null for
          *                default location)
-         * @param distinct Pass <code>true</code> if duplicate lines should be
-         *                discarded.
          * @param numHeader number of lines to preclude before shuffling starts
          * @return a list of temporary flat files
          * @throws IOException generic IO exception
          */
-        public static List<File> shuffInBatch(File file, Random random,
-                Charset cs, File tmpdirectory,
-                boolean distinct, int numHeader)
+        public static List<LineCountFile> shuffInBatch(File file, Random random,
+                Charset cs, File tmpdirectory, int numHeader)
                 throws IOException {
                 BufferedReader fbr = new BufferedReader(new InputStreamReader(
                         new FileInputStream(file), cs));
                 return shuffInBatch(fbr, file.length(), random, DEFAULTMAXTEMPFILES,
-                        estimateAvailableMemory(), cs, tmpdirectory, distinct,
+                        estimateAvailableMemory(), cs, tmpdirectory,
                         numHeader, false);
         }
 
@@ -805,20 +578,17 @@ public class ExternalShuffle {
          *                Charset.defaultCharset())
          * @param tmpdirectory location of the temporary files (set to null for
          *                default location)
-         * @param distinct Pass <code>true</code> if duplicate lines should be
-         *                discarded.
          * @param numHeader number of lines to preclude before shuffling starts
          * @return a list of temporary flat files
          * @throws IOException generic IO exception
          */
-        public static List<File> shuffInBatch(File file, Random random,
-                int maxtmpfiles, Charset cs, File tmpdirectory,
-                boolean distinct, int numHeader)
+        public static List<LineCountFile> shuffInBatch(File file, Random random,
+                int maxtmpfiles, Charset cs, File tmpdirectory, int numHeader)
                 throws IOException {
                 BufferedReader fbr = new BufferedReader(new InputStreamReader(
                         new FileInputStream(file), cs));
                 return shuffInBatch(fbr, file.length(), random, maxtmpfiles,
-                        estimateAvailableMemory(), cs, tmpdirectory, distinct,
+                        estimateAvailableMemory(), cs, tmpdirectory,
                         numHeader, false);
         }
 
@@ -835,60 +605,20 @@ public class ExternalShuffle {
          *                Charset.defaultCharset())
          * @param tmpdirectory location of the temporary files (set to null for
          *                default location)
-         * @param distinct Pass <code>true</code> if duplicate lines should be
-         *                discarded.
          * @param numHeader number of lines to preclude before shuffling starts
          * @param usegzip use gzip compression for the temporary files
          * @return a list of temporary flat files
          * @throws IOException generic IO exception
          */
-        public static List<File> shuffInBatch(File file, Random random,
-                int maxtmpfiles, Charset cs, File tmpdirectory,
-                boolean distinct, int numHeader, boolean usegzip)
+        public static List<LineCountFile> shuffInBatch(File file, Random random,
+                int maxtmpfiles, Charset cs, File tmpdirectory, int numHeader, boolean usegzip)
                 throws IOException {
                 BufferedReader fbr = new BufferedReader(new InputStreamReader(
                         new FileInputStream(file), cs));
                 return shuffInBatch(fbr, file.length(), random, maxtmpfiles,
-                        estimateAvailableMemory(), cs, tmpdirectory, distinct,
+                        estimateAvailableMemory(), cs, tmpdirectory,
                         numHeader, usegzip);
         }
-
-        /**
-         * This will simply load the file by blocks of lines, then shuffle them
-         * in-memory, and write the result to temporary files that have to be
-         * merged later. You can specify a bound on the number of temporary
-         * files that will be created.
-         *
-         * @param file some flat file
-         * @param random random number generator
-         * @param maxtmpfiles maximal number of temporary files
-         * @param cs character set to use (can use
-         *                Charset.defaultCharset())
-         * @param tmpdirectory location of the temporary files (set to null for
-         *                default location)
-         * @param distinct Pass <code>true</code> if duplicate lines should be
-         *                discarded.
-         * @param numHeader number of lines to preclude before shuffling starts
-         * @param usegzip use gzip compression for the temporary files
-         * @param parallel whether to shuffle in parallel
-         * @return a list of temporary flat files
-         * @throws IOException generic IO exception
-         */
-        public static List<File> shuffInBatch(File file, Random random,
-                int maxtmpfiles, Charset cs, File tmpdirectory,
-                boolean distinct, int numHeader, boolean usegzip, boolean parallel)
-                throws IOException {
-                BufferedReader fbr = new BufferedReader(new InputStreamReader(
-                        new FileInputStream(file), cs));
-                return shuffInBatch(fbr, file.length(), random, maxtmpfiles,
-                        estimateAvailableMemory(), cs, tmpdirectory, distinct,
-                        numHeader, usegzip);
-        }
-
-        /**
-         * default random.
-         */
-        public static Random defaultRandom = new Random();
 
         /**
          * Default maximal number of temporary files allowed.
